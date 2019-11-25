@@ -8,8 +8,6 @@ module Fluent::Plugin
 
     helpers :thread
 
-    DEFAULT_FORMAT_TYPE = 'json'
-
     config_param :server, :string, :default => 'localhost:4222',
                  :desc => "NATS treaming server host:port"
     config_param :cluster_id, :string, :default => 'fluentd',
@@ -27,6 +25,10 @@ module Fluent::Plugin
                  :desc => "The max number of reconnect tries"
     config_param :reconnect_time_wait, :integer, :default => 2,
                  :desc => "The number of seconds to wait between reconnect tries"
+
+    def multi_workers_ready?
+      true
+    end
 
     def initialize
       super
@@ -72,7 +74,7 @@ module Fluent::Plugin
       end
 
       log.info "subscribe #{channel} #{queue} #{durable_name}"
-      @sc.subscribe(@channel, queue: @queue, durable_name: @durable_name) do |msg|
+      @sc.subscribe(@channel, queue: @queue, durable_name: @durable_name, start_at: :first) do |msg|
         tag = @channel
         begin
           message = JSON.parse(msg.data)
