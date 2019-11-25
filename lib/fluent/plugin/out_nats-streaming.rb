@@ -1,5 +1,4 @@
 require "fluent/plugin/output"
-# require "nats/client"
 require 'stan/client'
 
 module Fluent::Plugin
@@ -18,10 +17,6 @@ module Fluent::Plugin
                  :desc => "cluster id"
     config_param :client_id, :string, :default => 'fluentd',
                  :desc => "client id"
-    config_param :default_topic, :string, :default => nil,
-                 :desc => "default topic name"
-    config_param :queue, :string, :default => nil,
-                 :desc => "queue"
     config_param :durable_name, :string, :default => nil,
                  :desc => "durable name"
 

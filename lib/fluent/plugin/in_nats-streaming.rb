@@ -1,91 +1,88 @@
 require "fluent/plugin/input"
-require "nats/client"
+require 'stan/client'
 
-module Fluent
-  module Plugin
-    class NATSInput < Fluent::Plugin::Input
-      Fluent::Plugin.register_input("nats", self)
+module Fluent::Plugin
+  class NatsStreamingInput < Input
 
-      helpers :thread
+    Fluent::Plugin.register_input('nats-streaming', self)
 
-      desc "NATS server hostname"
-      config_param :host, :string, default: "localhost"
-      desc "NATS server port"
-      config_param :port, :integer, default: 4222
-      desc "Username for authorized connection"
-      config_param :user, :string, default: "nats"
-      desc "Password for authorized connection"
-      config_param :password, :string, default: "nats", secret: true
-      desc "Subscribing queue names"
-      config_param :queues, :array, default: ["fluent.>"]
-      config_param :queue, :string, default: "fluent.>", obsoleted: "Use `queues` instead"
-      desc "The tag prepend before queue name"
-      config_param :tag, :string, default: "nats"
-      desc "Enable secure SSL/TLS connection"
-      config_param :ssl, :bool, default: false
-      desc "The max number of reconnect tries"
-      config_param :max_reconnect_attempts, :integer, default: 150
-      desc "The number of seconds to wait between reconnect tries"
-      config_param :reconnect_time_wait, :integer, default: 2
+    helpers :thread
 
-      def configure(conf)
-        super
+    DEFAULT_FORMAT_TYPE = 'json'
 
-        @nats_config = {
-          uri: "nats://#{@host}:#{@port}",
-          ssl: @ssl,
-          user: @user,
-          pass: @password,
+    config_param :server, :string, :default => 'localhost:4222',
+                 :desc => "NATS treaming server host:port"
+    config_param :cluster_id, :string, :default => 'fluentd',
+                 :desc => "cluster id"
+    config_param :client_id, :string, :default => 'fluentd',
+                 :desc => "client id"
+    config_param :durable_name, :string, :default => 'fluentd',
+                 :desc => "durable name"
+    config_param :queue, :string, :default => 'fluentd',
+                 :desc => "queue name"
+    config_param :channel, :string, :default => nil,
+                 :desc => "channel name"
+
+    config_param :max_reconnect_attempts, :integer, :default => 150,
+                 :desc => "The max number of reconnect tries"
+    config_param :reconnect_time_wait, :integer, :default => 2,
+                 :desc => "The number of seconds to wait between reconnect tries"
+
+    def initialize
+      super
+
+      @sc = nil
+    end
+
+    def configure(conf)
+      super
+
+      @sc_config = {
+          servers: ["nats://#{server}"],
           reconnect_time_wait: @reconnect_time_wait,
-          max_reconnect_attempts: @max_reconnect_attempts,
+          max_reconnect_attempts: @max_reconnect_attempts
         }
+    end
+
+    def start
+      super
+      thread_create(:nats_streaming_input_main, &method(:run))
+    end
+
+    def close
+      super
+      @sc.close if @sc
+    end
+
+    def terminate
+      super
+      @sc = nil
+    end
+
+    def run
+      begin
+        # time = Fluent::Engine.now
+        log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
+        @sc = STAN::Client.new
+        @sc.connect(@cluster_id, @client_id, @sc_config)
+      rescue Exception => e
+        log.warn "Send exception occurred: #{e}"
+        log.warn "Exception Backtrace : #{e.backtrace.join("\n")}"
+        raise
       end
 
-      def start
-        super
-        NATS.on_error do |error|
-          log.error "Server Error:", error: error
-          # supervisor will restart worker
-          exit!
+      log.info "subscribe #{channel} #{queue} #{durable_name}"
+      @sc.subscribe(@channel, queue: @queue, durable_name: @durable_name) do |msg|
+        tag = @channel
+        begin
+          message = JSON.parse(msg.data)
+        rescue JSON::ParserError => e
+          log.error "Failed parsing JSON #{e.inspect}.  Passing as a normal string"
+          message = msg.data
         end
-        run_reactor_thread
-        thread_create(:nats_input_main, &method(:run))
-        log.info "listening nats on #{@uri}/#{@queue}"
-      end
-
-      def shutdown
-        @nats_conn.close
-        EM.stop if EM.reactor_running?
-        super
-      end
-
-      def run
-        EM.next_tick do
-          @nats_conn = NATS.connect(@nats_config) do
-            @queues.each do |queue|
-              @nats_conn.subscribe(queue) do |msg, _reply, sub|
-                tag = "#{@tag}.#{sub}"
-                begin
-                  message = JSON.parse(msg)
-                rescue JSON::ParserError => e
-                  log.error "Failed parsing JSON #{e.inspect}.  Passing as a normal string"
-                  message = msg
-                end
-                time = Engine.now
-                router.emit(tag, time, message || {})
-              end
-            end
-          end
-        end
-      end
-
-      private
-
-      def run_reactor_thread
-        return if EM.reactor_running?
-        thread_create(:nats_input_reactor_thread) do
-          EM.run
-        end
+        time = Fluent::Engine.now
+        # log.warn "Emit  #{tag} #{message}"
+        router.emit(tag, time, message || {})
       end
     end
   end
