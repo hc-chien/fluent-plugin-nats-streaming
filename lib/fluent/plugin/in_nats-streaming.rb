@@ -21,9 +21,9 @@ module Fluent::Plugin
     config_param :channel, :string, :default => nil,
                  :desc => "channel name"
 
-    config_param :max_reconnect_attempts, :integer, :default => 150,
+    config_param :max_reconnect_attempts, :integer, :default => 10,
                  :desc => "The max number of reconnect tries"
-    config_param :reconnect_time_wait, :integer, :default => 2,
+    config_param :reconnect_time_wait, :integer, :default => 5,
                  :desc => "The number of seconds to wait between reconnect tries"
 
     def multi_workers_ready?
@@ -40,10 +40,19 @@ module Fluent::Plugin
       super
 
       @sc_config = {
-          servers: ["nats://#{server}"],
-          reconnect_time_wait: @reconnect_time_wait,
-          max_reconnect_attempts: @max_reconnect_attempts
-        }
+        servers: ["nats://#{server}"],
+        reconnect_time_wait: @reconnect_time_wait,
+        max_reconnect_attempts: @max_reconnect_attempts
+      }
+
+      @sub_opts = {
+        queue: @queue,
+        durable_name: @durable_name,
+        start_at: :first,
+        deliver_all_available: true,
+        ack_wait: 10,  # seconds
+        connect_timeout: 2 # seconds
+      }
     end
 
     def start
@@ -62,19 +71,19 @@ module Fluent::Plugin
     end
 
     def run
+      @sc = STAN::Client.new
+
       begin
-        # time = Fluent::Engine.now
         log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
-        @sc = STAN::Client.new
-        @sc.connect(@cluster_id, @client_id, @sc_config)
+        @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+        log.info "connected"
       rescue Exception => e
-        log.warn "Send exception occurred: #{e}"
-        log.warn "Exception Backtrace : #{e.backtrace.join("\n")}"
-        raise
+        log.error "Exception occurred: #{e}"
+        run
       end
 
       log.info "subscribe #{channel} #{queue} #{durable_name}"
-      @sc.subscribe(@channel, queue: @queue, durable_name: @durable_name, start_at: :first) do |msg|
+      @sc.subscribe(@channel, @sub_opts) do |msg|
         tag = @channel
         begin
           message = JSON.parse(msg.data)
@@ -83,8 +92,18 @@ module Fluent::Plugin
           message = msg.data
         end
         time = Fluent::Engine.now
-        # log.warn "Emit  #{tag} #{message}"
         router.emit(tag, time, message || {})
+      end
+
+      while thread_current_running?
+        begin
+          log.trace "test connection"
+          @sc.nats.flush(@reconnect_time_wait)
+          sleep(5)
+        rescue Exception => e
+          log.error "Exception occurred: #{e}"
+          run
+        end
       end
     end
   end

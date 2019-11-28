@@ -8,7 +8,6 @@ module Fluent::Plugin
 
     helpers :formatter, :thread, :inject, :compat_parameters
 
-    DEFAULT_BUFFER_TYPE = "memory"
     DEFAULT_FORMAT_TYPE = 'json'
 
     config_param :server, :string, :default => 'localhost:4222',
@@ -20,12 +19,19 @@ module Fluent::Plugin
     config_param :durable_name, :string, :default => nil,
                  :desc => "durable name"
 
-    config_param :max_reconnect_attempts, :integer, :default => 150,
+    config_param :max_reconnect_attempts, :integer, :default => 10,
                  :desc => "The max number of reconnect tries"
-    config_param :reconnect_time_wait, :integer, :default => 2,
+    config_param :reconnect_time_wait, :integer, :default => 5,
                  :desc => "The number of seconds to wait between reconnect tries"
+    config_param :connect_timeout, :integer, :default => 2,
+                 :desc => "Connect timeout in seconds"
+    config_param :timeout, :integer, :default => 5,
+                 :desc => "Ack timeout"
 
     config_section :buffer do
+      config_set_default :@type, 'memory'
+      config_set_default :flush_mode, :interval
+      config_set_default :flush_interval, 1
       config_set_default :chunk_keys, ['tag']
       config_set_default :flush_at_shutdown, true
       config_set_default :chunk_limit_size, 10 * 1024
@@ -36,32 +42,68 @@ module Fluent::Plugin
       config_set_default :add_newline, false
     end
 
-    def initialize
-      super
-
-      @sc = nil
-    end
-
     def multi_workers_ready?
       true
     end
 
-    attr_accessor :formatter
+    def formatted_to_msgpack_binary?
+      true
+    end
+
+    def initialize
+      super
+      @sc = nil
+    end
 
     def configure(conf)
+      compat_parameters_convert(conf, :formatter, :buffer, :inject, default_chunk_key: "time")
+
       super
 
       @sc_config = {
-          servers: ["nats://#{server}"],
-          reconnect_time_wait: @reconnect_time_wait,
-          max_reconnect_attempts: @max_reconnect_attempts
-        }
-      @formatter = formatter_create
+        servers: ["nats://#{server}"],
+        reconnect_time_wait: @reconnect_time_wait,
+        max_reconnect_attempts: @max_reconnect_attempts,
+        connect_timeout: @connect_timeout
+      }
+
+      formatter_conf = conf.elements('format').first
+      unless formatter_conf
+        raise Fluent::ConfigError, "<format> section is required."
+      end
+      unless formatter_conf["@type"]
+        raise Fluent::ConfigError, "format/@type is required."
+      end
+      @formatter_proc = setup_formatter(formatter_conf)
     end
 
     def start
       super
       thread_create(:nats_streaming_output_main, &method(:run))
+    end
+
+    def run
+      @sc = STAN::Client.new
+
+      begin
+        log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
+        @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+        log.info "connected"
+      rescue Exception => e
+        log.error "Exception occurred: #{e}"
+        run
+      end
+
+      while thread_current_running?
+        begin
+          log.trace "test connection"
+          @sc.nats.flush(@reconnect_time_wait)
+          sleep(5)
+        rescue Exception => e
+          log.error "Exception occurred: #{e}"
+          run
+        end
+      end
     end
 
     def close
@@ -74,15 +116,24 @@ module Fluent::Plugin
       @sc = nil
     end
 
-    def run
-      begin
-        log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
-        @sc = STAN::Client.new
-        @sc.connect(@cluster_id, @client_id, @sc_config)
-      rescue Exception => e
-        log.warn "Send exception occurred: #{e}"
-        log.warn "Exception Backtrace : #{e.backtrace.join("\n")}"
-        raise
+    def setup_formatter(conf)
+      type = conf['@type']
+      case type
+      when 'json'
+        begin
+          require 'oj'
+          Oj.default_options = Fluent::DEFAULT_OJ_OPTIONS
+          Proc.new { |tag, time, record| Oj.dump(record) }
+        rescue LoadError
+          require 'yajl'
+          Proc.new { |tag, time, record| Yajl::Encoder.encode(record) }
+        end
+      when 'ltsv'
+        require 'ltsv'
+        Proc.new { |tag, time, record| LTSV.dump(record) }
+      else
+        @formatter = formatter_create(usage: 'kafka-plugin', conf: conf)
+        @formatter.method(:format)
       end
     end
 
@@ -93,10 +144,20 @@ module Fluent::Plugin
       end
     end
 
-    def format(tag, time, record)
-      record = inject_values_to_record(tag, time, record)
-      @formatter.format(tag, time, record).chomp + "\n"
-    end
+    def write(chunk)
+      return if chunk.empty?
+      tag = chunk.metadata.tag
 
+      messages = 0
+      chunk.each { |time, record|
+        record_buf = @formatter_proc.call(tag, time, record)
+        log.trace "Send record: #{record_buf}"
+        @sc.publish(tag, record_buf, {timeout: @timeout} )
+        messages += 1
+      }
+      if messages > 0
+          log.debug { "#{messages} messages send." }
+      end
+    end
   end
 end
