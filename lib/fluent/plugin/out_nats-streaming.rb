@@ -11,7 +11,7 @@ module Fluent::Plugin
     DEFAULT_FORMAT_TYPE = 'json'
 
     config_param :server, :string, :default => 'localhost:4222',
-                 :desc => "NATS treaming server host:port"
+                 :desc => "NATS streaming server host:port"
     config_param :cluster_id, :string, :default => 'fluentd',
                  :desc => "cluster id"
     config_param :client_id, :string, :default => 'fluentd',
