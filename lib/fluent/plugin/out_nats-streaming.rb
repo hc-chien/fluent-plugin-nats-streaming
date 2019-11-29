@@ -65,10 +65,10 @@ module Fluent::Plugin
         connect_timeout: @connect_timeout
       }
 
-      formatter_conf = conf.elements('format').first
-      unless formatter_conf
-        raise Fluent::ConfigError, "<format> section is required."
-      end
+      formatter_conf = conf.elements('format').first || {"@type" => DEFAULT_FORMAT_TYPE }
+      #unless formatter_conf
+      #  raise Fluent::ConfigError, "<format> section is required."
+      #end
       unless formatter_conf["@type"]
         raise Fluent::ConfigError, "format/@type is required."
       end
@@ -118,6 +118,7 @@ module Fluent::Plugin
     def process(tag, es)
       es = inject_values_to_event_stream(tag, es)
       es.each do |time,record|
+        record.force_encoding('ASCII-8BIT')
         @sc.publish(tag, format(tag, time, record))
       end
     end
@@ -129,6 +130,7 @@ module Fluent::Plugin
       messages = 0
       chunk.each { |time, record|
         record_buf = @formatter_proc.call(tag, time, record)
+        record_buf.force_encoding('ASCII-8BIT')
         log.trace "Send record: #{record_buf}"
         @sc.publish(tag, record_buf, {timeout: @timeout} )
         messages += 1
