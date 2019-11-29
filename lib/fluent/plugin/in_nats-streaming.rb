@@ -32,7 +32,6 @@ module Fluent::Plugin
 
     def initialize
       super
-
       @sc = nil
     end
 
@@ -60,27 +59,12 @@ module Fluent::Plugin
       thread_create(:nats_streaming_input_main, &method(:run))
     end
 
-    def close
-      super
-      @sc.close if @sc
-    end
-
-    def terminate
-      super
-      @sc = nil
-    end
-
     def run
       @sc = STAN::Client.new
 
-      begin
-        log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
-        @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
-        log.info "connected"
-      rescue Exception => e
-        log.error "Exception occurred: #{e}"
-        run
-      end
+      log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
+      @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+      log.info "connected"
 
       log.info "subscribe #{channel} #{queue} #{durable_name}"
       @sc.subscribe(@channel, @sub_opts) do |msg|
@@ -96,15 +80,20 @@ module Fluent::Plugin
       end
 
       while thread_current_running?
-        begin
-          log.trace "test connection"
-          @sc.nats.flush(@reconnect_time_wait)
-          sleep(5)
-        rescue Exception => e
-          log.error "Exception occurred: #{e}"
-          run
-        end
+        log.trace "test connection"
+        @sc.nats.flush(@reconnect_time_wait)
+        sleep(5)
       end
+    end
+
+    def close
+      super
+      @sc.close if @sc
+    end
+
+    def terminate
+      super
+      @sc = nil
     end
   end
 end
