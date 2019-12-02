@@ -58,8 +58,14 @@ module Fluent::Plugin
     def configure(conf)
       super
 
+      servers = [ ] 
+      @server.split(',').map do |server_str|
+        server_str = server_str.strip
+        servers.push("nats://#{server_str}")
+      end
+      
       @sc_config = {
-        servers: ["nats://#{server}"],
+        servers: servers,
         reconnect_time_wait: @reconnect_time_wait,
         max_reconnect_attempts: @max_reconnect_attempts,
         connect_timeout: @connect_timeout
@@ -83,7 +89,7 @@ module Fluent::Plugin
     def run
       @sc = STAN::Client.new
 
-      log.info "connect nats server nats://#{server} #{cluster_id} #{client_id}"
+      log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
       @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
       log.info "connected"
 
@@ -118,8 +124,8 @@ module Fluent::Plugin
     def process(tag, es)
       es = inject_values_to_event_stream(tag, es)
       es.each do |time,record|
-        record.force_encoding('ASCII-8BIT')
-        @sc.publish(tag, format(tag, time, record))
+        # record.force_encoding('ASCII-8BIT')
+        @sc.publish(tag, format(tag, time, record.b))
       end
     end
 
