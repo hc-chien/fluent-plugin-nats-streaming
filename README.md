@@ -13,10 +13,9 @@ example for nats streaming input:
 
   <source>
     @type nats-streaming
-    server 127.0.0.1:4222
+    server "127.0.0.1:4222,127.0.0.1:4223,127.0.0.1:4224"
     cluster_id test-cluster
 
-    # support multi child
     client_id "in-#{Socket.gethostname}-#{worker_id}"
     channel   nats.test
     queue     test
@@ -36,7 +35,7 @@ example for nats streaming output:
 
   <match nats.**>
     @type nats-streaming
-    server 127.0.0.1:4222
+    server "127.0.0.1:4222,127.0.0.1:4223,127.0.0.1:4224"
     client_id "out-#{Socket.gethostname}-#{worker_id}"
     cluster_id test-cluster
 
