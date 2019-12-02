@@ -138,11 +138,21 @@ module Fluent::Plugin
         record_buf = @formatter_proc.call(tag, time, record)
         record_buf.force_encoding('ASCII-8BIT')
         log.trace "Send record: #{record_buf}"
-        @sc.publish(tag, record_buf, {timeout: @timeout} )
+        begin
+          @sc.publish(tag, record_buf, {timeout: @timeout} )
+        rescue Exception => e
+          # log.error e
+          @sc.close
+          @sc = STAN::Client.new
+          log.info "reconnect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
+          @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+          log.info "connected"
+          @sc.publish(tag, record_buf, {timeout: @timeout} )
+        end
         messages += 1
       }
       if messages > 0
-          log.debug { "#{messages} messages send." }
+        log.debug { "#{messages} messages send." }
       end
     end
 
