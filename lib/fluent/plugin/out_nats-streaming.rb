@@ -136,10 +136,10 @@ module Fluent::Plugin
       messages = 0
       chunk.each { |time, record|
         record_buf = @formatter_proc.call(tag, time, record)
-        record_buf.force_encoding('ASCII-8BIT')
+        # record_buf.force_encoding('ASCII-8BIT')
         log.trace "Send record: #{record_buf}"
         begin
-          @sc.publish(tag, record_buf, {timeout: @timeout} )
+          @sc.publish(tag, record_buf.b, {timeout: @timeout} )
         rescue Exception => e
           # log.error e
           @sc.close
@@ -147,7 +147,8 @@ module Fluent::Plugin
           log.info "reconnect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
           @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
           log.info "connected"
-          @sc.publish(tag, record_buf, {timeout: @timeout} )
+          # @sc.publish(tag, record_buf.b, {timeout: @timeout} )
+          retry
         end
         messages += 1
       }
