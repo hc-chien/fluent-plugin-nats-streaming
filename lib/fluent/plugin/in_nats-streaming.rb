@@ -3,7 +3,6 @@ require 'stan/client'
 
 module Fluent::Plugin
   class NatsStreamingInput < Input
-
     Fluent::Plugin.register_input('nats-streaming', self)
 
     helpers :thread
@@ -25,6 +24,8 @@ module Fluent::Plugin
                  :desc => "The max number of reconnect tries"
     config_param :reconnect_time_wait, :integer, :default => 5,
                  :desc => "The number of seconds to wait between reconnect tries"
+    config_param :max_consume_interval, :integer, :default => 120,
+                 :desc => "max consume interval time"
 
     def multi_workers_ready?
       true
@@ -33,6 +34,8 @@ module Fluent::Plugin
     def initialize
       super
       @sc = nil
+      @mutex = Mutex.new
+      @last = 0
     end
 
     def configure(conf)
@@ -65,29 +68,55 @@ module Fluent::Plugin
       thread_create(:nats_streaming_input_main, &method(:run))
     end
 
-    def run
-      @sc = STAN::Client.new
+    def reconnect
+      # log.info "reconnect server"
 
-      log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
-      @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
-      log.info "connected"
-
-      log.info "subscribe #{channel} #{queue} #{durable_name}"
-      @sc.subscribe(@channel, @sub_opts) do |msg|
-        tag = @channel
+      @mutex.synchronize do
         begin
-          message = JSON.parse(msg.data)
-        rescue JSON::ParserError => e
-          log.error "Failed parsing JSON #{e.inspect}.  Passing as a normal string"
-          message = msg.data
+          begin
+            @sc.close if @sc
+          rescue
+            log.warn "close error"
+          end
+
+          log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
+          @sc = STAN::Client.new
+          @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+        rescue Exception => e
+          log.error e
+
+          log.info "connect failed, sleep 5 sec"
+          sleep(5)
+          retry
         end
-        time = Fluent::Engine.now
-        router.emit(tag, time, message || {})
+
+        log.debug "connected"
+        @last = Time.now.to_i
+
+        log.info "subscribe #{channel} #{queue} #{durable_name}"
+        @sc.subscribe(@channel, @sub_opts) do |msg|
+          tag = @channel
+          begin
+            message = JSON.parse(msg.data)
+          rescue JSON::ParserError => e
+            log.error "Failed parsing JSON #{e.inspect}.  Passing as a normal string"
+            message = msg.data
+          end
+          time = Fluent::Engine.now
+          router.emit(tag, time, message || {})
+          @last = time.to_i
+        end
       end
+    end
+
+    def run
+      # reconnect
 
       while thread_current_running?
-        log.trace "test connection"
-        @sc.nats.flush(@reconnect_time_wait)
+        # log.trace "test connection"
+        # @sc.nats.flush(@reconnect_time_wait)
+        # raise "wait too long for next message.." if (@max_consume_interval > 0 and Time.now.to_i - @last > @max_consume_interval)
+        reconnect if (@max_consume_interval > 0 and Time.now.to_i - @last > @max_consume_interval)
         sleep(5)
       end
     end

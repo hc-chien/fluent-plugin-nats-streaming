@@ -6,7 +6,7 @@ module Fluent::Plugin
 
     Fluent::Plugin.register_output('nats-streaming', self)
 
-    helpers :formatter, :thread, :inject 
+    helpers :formatter, :thread, :inject
 
     DEFAULT_FORMAT_TYPE = 'json'
 
@@ -46,6 +46,10 @@ module Fluent::Plugin
       true
     end
 
+    def prefer_buffered_processing
+      false
+    end
+
     def formatted_to_msgpack_binary?
       true
     end
@@ -53,17 +57,18 @@ module Fluent::Plugin
     def initialize
       super
       @sc = nil
+      @mutex = Mutex.new
     end
 
     def configure(conf)
       super
 
-      servers = [ ] 
+      servers = [ ]
       @server.split(',').map do |server_str|
         server_str = server_str.strip
         servers.push("nats://#{server_str}")
       end
-      
+
       @sc_config = {
         servers: servers,
         reconnect_time_wait: @reconnect_time_wait,
@@ -83,21 +88,24 @@ module Fluent::Plugin
 
     def start
       super
-      thread_create(:nats_streaming_output_main, &method(:run))
+      # log.info "start..."
+      # thread_create(:nats_streaming_output_main, &method(:run))
+      run
     end
 
     def run
+      # log.info "run..."
       @sc = STAN::Client.new
 
       log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
       @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
       log.info "connected"
 
-      while thread_current_running?
-        log.trace "test connection"
-        @sc.nats.flush(@reconnect_time_wait)
-        sleep(5)
-      end
+#      while thread_current_running?
+#        log.info "test connection"
+#        @sc.nats.flush(@reconnect_time_wait)
+#        sleep(5)
+#      end
     end
 
     def setup_formatter(conf)
@@ -121,40 +129,65 @@ module Fluent::Plugin
       end
     end
 
+    def publish(tag, time, record)
+      record_buf = @formatter_proc.call(tag, time, record)
+      log.trace "Send record: #{record_buf}"
+
+      begin
+        @sc.publish(tag, record_buf.b, {timeout: @timeout} )
+      rescue Exception => e
+        @flag = "stopped"
+        log.error e
+
+        @mutex.synchronize do
+          if @flag != "stopped"
+            break
+          end
+
+          begin
+            begin
+              @sc.close
+            rescue
+              log.warn "close error"
+            end
+
+            log.info "reconnect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
+            @sc = STAN::Client.new
+            @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+          rescue Exception => e2
+            log.error e2
+
+            log.info "connect failed, sleep 5 sec"
+            sleep(5)
+            retry
+          end
+
+          @flag = "connected"
+          log.debug "reconnected"
+        end
+
+        retry
+      end
+    end
+
     def process(tag, es)
-      es = inject_values_to_event_stream(tag, es)
-      es.each do |time,record|
-        # record.force_encoding('ASCII-8BIT')
-        @sc.publish(tag, format(tag, time, record.b))
+      # log.info "process..."
+      # es = inject_values_to_event_stream(tag, es)
+      messages = 0
+      es.each do |time, record|
+        publish(tag, time, record) 
+        messages += 1
+      end
+
+      if messages > 0
+        log.debug { "#{tag}: #{messages} messages send." }
       end
     end
 
     def write(chunk)
+      # log.info "write..."
       return if chunk.empty?
-      tag = chunk.metadata.tag
-
-      messages = 0
-      chunk.each { |time, record|
-        record_buf = @formatter_proc.call(tag, time, record)
-        # record_buf.force_encoding('ASCII-8BIT')
-        log.trace "Send record: #{record_buf}"
-        begin
-          @sc.publish(tag, record_buf.b, {timeout: @timeout} )
-        rescue Exception => e
-          # log.error e
-          @sc.close
-          @sc = STAN::Client.new
-          log.info "reconnect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
-          @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
-          log.info "connected"
-          # @sc.publish(tag, record_buf.b, {timeout: @timeout} )
-          retry
-        end
-        messages += 1
-      }
-      if messages > 0
-        log.debug { "#{messages} messages send." }
-      end
+      process(chunk.metadata.tag, chunk)
     end
 
     def close
