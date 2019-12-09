@@ -145,10 +145,15 @@ module Fluent::Plugin
           end
 
           begin
+            try=0
+            # should have enough time for other threads to finish job
             begin
-              @sc.close
+              sleep(@timeout)
+              try+=1
+              @sc.close if @sc
             rescue
-              log.warn "close error"
+              log.warn "close error #{try}"
+              retry if try<3
             end
 
             log.info "reconnect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
@@ -157,8 +162,7 @@ module Fluent::Plugin
           rescue Exception => e2
             log.error e2
 
-            log.info "connect failed, sleep 5 sec"
-            sleep(5)
+            log.info "connect failed, retry..."
             retry
           end
 

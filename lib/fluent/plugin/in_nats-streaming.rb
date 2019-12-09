@@ -73,10 +73,14 @@ module Fluent::Plugin
 
       @mutex.synchronize do
         begin
+          try = 0
           begin
+            sleep(5)
+            try+=1
             @sc.close if @sc
           rescue
-            log.warn "close error"
+            log.warn "close error #{try}"
+            retry if try<3
           end
 
           log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
@@ -85,8 +89,7 @@ module Fluent::Plugin
         rescue Exception => e
           log.error e
 
-          log.info "connect failed, sleep 5 sec"
-          sleep(5)
+          log.info "connect failed, retry..."
           retry
         end
 
