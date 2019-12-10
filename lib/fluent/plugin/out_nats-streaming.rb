@@ -16,8 +16,6 @@ module Fluent::Plugin
                  :desc => "cluster id"
     config_param :client_id, :string, :default => 'fluentd',
                  :desc => "client id"
-    config_param :durable_name, :string, :default => nil,
-                 :desc => "durable name"
 
     config_param :max_reconnect_attempts, :integer, :default => 10,
                  :desc => "The max number of reconnect tries"
@@ -77,12 +75,6 @@ module Fluent::Plugin
       }
 
       formatter_conf = conf.elements('format').first || {"@type" => DEFAULT_FORMAT_TYPE }
-      #unless formatter_conf
-      #  raise Fluent::ConfigError, "<format> section is required."
-      #end
-      unless formatter_conf["@type"]
-        raise Fluent::ConfigError, "format/@type is required."
-      end
       @formatter_proc = setup_formatter(formatter_conf)
     end
 
@@ -94,18 +86,17 @@ module Fluent::Plugin
     end
 
     def run
-      # log.info "run..."
       @sc = STAN::Client.new
 
       log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
-      @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+      @sc.connect(@cluster_id, @client_id.gsub(/\./, '_') + rand(10000).to_s, nats: @sc_config)
       log.info "connected"
 
-#      while thread_current_running?
-#        log.info "test connection"
-#        @sc.nats.flush(@reconnect_time_wait)
-#        sleep(5)
-#      end
+      # while thread_current_running?
+      #   log.info "test connection"
+      #   @sc.nats.flush(@reconnect_time_wait)
+      #   sleep(5)
+      # end
     end
 
     def setup_formatter(conf)
@@ -124,7 +115,7 @@ module Fluent::Plugin
         require 'ltsv'
         Proc.new { |tag, time, record| LTSV.dump(record) }
       else
-        @formatter = formatter_create(usage: 'kafka-plugin', conf: conf)
+        @formatter = formatter_create(usage: 'nats-streaming-plugin', conf: conf)
         @formatter.method(:format)
       end
     end
@@ -175,7 +166,6 @@ module Fluent::Plugin
     end
 
     def process(tag, es)
-      # log.info "process..."
       # es = inject_values_to_event_stream(tag, es)
       messages = 0
       es.each do |time, record|
@@ -189,7 +179,6 @@ module Fluent::Plugin
     end
 
     def write(chunk)
-      # log.info "write..."
       return if chunk.empty?
       process(chunk.metadata.tag, chunk)
     end

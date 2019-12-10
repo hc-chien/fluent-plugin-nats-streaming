@@ -13,12 +13,14 @@ module Fluent::Plugin
                  :desc => "cluster id"
     config_param :client_id, :string, :default => 'fluentd',
                  :desc => "client id"
-    config_param :durable_name, :string, :default => 'fluentd',
+    config_param :durable_name, :string, :default => nil,
                  :desc => "durable name"
-    config_param :queue, :string, :default => 'fluentd',
+    config_param :queue, :string, :default => nil,
                  :desc => "queue name"
     config_param :channel, :string, :default => nil,
                  :desc => "channel name"
+    config_param :start_at, :string, :default => "deliver_all_available",
+                 :desc => "start at"
 
     config_param :max_reconnect_attempts, :integer, :default => 10,
                  :desc => "The max number of reconnect tries"
@@ -56,7 +58,7 @@ module Fluent::Plugin
       @sub_opts = {
         queue: @queue,
         durable_name: @durable_name,
-        start_at: :first,
+        start_at: @start_at.to_sym,
         deliver_all_available: true,
         ack_wait: 10,  # seconds
         connect_timeout: 2 # seconds
@@ -69,7 +71,6 @@ module Fluent::Plugin
     end
 
     def reconnect
-      # log.info "reconnect server"
 
       @mutex.synchronize do
         begin
@@ -83,9 +84,12 @@ module Fluent::Plugin
             retry if try<3
           end
 
+          client_id= @client_id.gsub(/\./, '_')
+          client_id += rand(10000).to_s if @queue || @durable_name
           log.info "connect nats server #{@sc_config[:servers]} #{cluster_id} #{client_id}"
+
           @sc = STAN::Client.new
-          @sc.connect(@cluster_id, @client_id.gsub(/\./, '_'), nats: @sc_config)
+          @sc.connect(@cluster_id, client_id, nats: @sc_config)
         rescue Exception => e
           log.error e
 
